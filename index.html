@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ブラックジャック (チップ賭け機能つき)</title>
+    <title>ブラックジャック (Firebase同期版)</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0a6332; color: white; text-align: center; padding-top: 20px; }
         h1, h2 { margin: 5px 0; text-shadow: 2px 2px 4px #000; }
@@ -90,14 +90,14 @@
         const joinGameBtn = document.getElementById('join-game-btn');
         const gameIdInput = document.getElementById('game-id-input');
 
-        function getScore(hand) { /* ... */
+        function getScore(hand) {
             let score = 0, aceCount = 0;
             if(!hand) return 0;
             for (let card of hand) { if (card.rank === 'A') { aceCount++; score += 11; } else if (['K', 'Q', 'J'].includes(card.rank)) { score += 10; } else { score += parseInt(card.rank); } }
             while (score > 21 && aceCount > 0) { score -= 10; aceCount--; }
             return score;
         }
-        function createCardElement(card, isHidden = false) { /* ... */
+        function createCardElement(card, isHidden = false) {
             const cardEl = document.createElement('div');
             cardEl.className = 'card';
             if (isHidden) { cardEl.classList.add('hidden'); return cardEl; }
@@ -106,10 +106,9 @@
             cardEl.innerHTML = `<span class="suit">${card.suit}</span><span>${card.rank}</span><span class="suit">${card.suit}</span>`;
             return cardEl;
         }
-
         function generateRoomId() { return Math.floor(100000 + Math.random() * 900000).toString(); }
         
-        createGameBtn.addEventListener('click', async () => { /* ... */
+        createGameBtn.addEventListener('click', async () => {
             const playerName = playerNameInput.value.trim();
             if (!playerName) { alert('名前を入力してください。'); return; }
             localPlayerId = `player_${Date.now()}`;
@@ -129,12 +128,10 @@
             await set(gameRef, initialGameState);
             setupGameListener(newGameId);
         });
-
-        joinGameBtn.addEventListener('click', async () => { /* ... */
+        joinGameBtn.addEventListener('click', async () => {
             const playerName = playerNameInput.value.trim();
             const gameId = gameIdInput.value.trim();
             if (!playerName || !gameId) { alert('名前とゲームIDを入力してください。'); return; }
-
             const existingGameRef = ref(database, `games/${gameId}`);
             const snapshot = await get(existingGameRef);
             if (snapshot.exists()) {
@@ -150,28 +147,22 @@
                 setupGameListener(gameId);
             } else { alert('指定されたゲームIDが見つかりません。'); }
         });
-
         function setupGameListener(gameId) {
             gameSetupDiv.style.display = 'none';
             gameContainerDiv.style.display = 'block';
             gameRef = ref(database, `games/${gameId}`);
-            
             onDisconnect(ref(database, `games/${gameId}/players/${localPlayerId}`)).remove();
-
             onValue(gameRef, (snapshot) => {
                 if (!snapshot.exists()) { alert("ホストが退出しました。"); window.location.reload(); return; }
-                
                 const oldState = gameState;
                 gameState = snapshot.val();
                 renderGame();
-
-                const localPlayer = gameState.players[localPlayerId];
+                const localPlayer = gameState.players?.[localPlayerId];
                 if (localPlayer?.isHost) {
-                    // ★チップ賭け機能: 全員がベット確定したらゲーム開始
-                    if (gameState.status === 'betting' && Object.values(gameState.players).every(p => p.status === 'ready' || p.chips === 0)) {
+                    if (gameState.status === 'betting' && gameState.players && Object.values(gameState.players).every(p => p.status === 'ready' || p.chips === 0)) {
                         dealCards();
                     }
-                    if (gameState.status === 'playing' && Object.values(gameState.players).every(p => p.status !== 'playing')) {
+                    if (gameState.status === 'playing' && gameState.players && Object.values(gameState.players).every(p => p.status !== 'playing')) {
                         update(gameRef, { status: 'dealer_turn' });
                     }
                     if (gameState.status === 'dealer_turn' && oldState.status !== 'dealer_turn') {
@@ -181,7 +172,6 @@
             });
         }
         
-        // ★チップ賭け機能: 「次のラウンドへ」ボタンでベッティング開始
         nextRoundBtn.addEventListener('click', () => {
             const playerUpdates = {};
             Object.values(gameState.players).forEach(p => {
@@ -195,40 +185,30 @@
                 message: "ベットしてください"
             });
         });
-
         async function dealCards() {
             const suits = ['♠','♥','♦','♣'], ranks = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
             let newDeck = [];
             for (let i=0; i<4; i++) for (let s of suits) for (let r of ranks) newDeck.push({suit:s, rank:r});
             for (let i = newDeck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [newDeck[i], newDeck[j]] = [newDeck[j], newDeck[i]]; }
-
             const updates = { status: 'playing', deck: newDeck, message: '' };
             const playerUpdates = { ...gameState.players };
-            
-            // ベット額をチップから引く
-            for(const pid in playerUpdates) {
-                playerUpdates[pid].chips -= playerUpdates[pid].bet;
-            }
-
+            for(const pid in playerUpdates) { playerUpdates[pid].chips -= playerUpdates[pid].bet; }
             updates.dealer = { hand: [] };
             for(let i=0; i<2; i++) {
                 for(const pid of gameState.playerOrder) if(playerUpdates[pid].status === 'ready') playerUpdates[pid].hand.push(updates.deck.pop());
                 updates.dealer.hand.push(updates.deck.pop());
             }
-
             for(const pid in playerUpdates) {
                 if(playerUpdates[pid].status === 'ready') {
                     playerUpdates[pid].score = getScore(playerUpdates[pid].hand);
                     playerUpdates[pid].status = playerUpdates[pid].score === 21 ? 'blackjack' : 'playing';
                 }
             }
-            
             updates.players = playerUpdates;
             updates.currentPlayerKey = gameState.playerOrder.find(pid => playerUpdates[pid].status === 'playing');
             await update(gameRef, updates);
         }
-
-        hitBtn.addEventListener('click', async () => { /* ... */
+        hitBtn.addEventListener('click', async () => {
             const newCard = gameState.deck.pop();
             const newHand = [...gameState.players[localPlayerId].hand, newCard];
             const newScore = getScore(newHand);
@@ -240,30 +220,27 @@
             await update(gameRef, updates);
             if(newScore > 21 && gameState.players[localPlayerId]?.isHost) setTimeout(nextPlayerTurn, 500);
         });
-        
-        standBtn.addEventListener('click', () => { /* ... */
+        standBtn.addEventListener('click', () => {
             update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { status: 'stand' });
             if (gameState.players[localPlayerId]?.isHost) setTimeout(nextPlayerTurn, 500);
         });
-
-        function nextPlayerTurn() { /* ... */
+        function nextPlayerTurn() {
             if (!gameState.players[localPlayerId]?.isHost) return;
             const order = gameState.playerOrder;
             const currentIndex = order.indexOf(gameState.currentPlayerKey);
             let nextPlayerKey = null;
             for (let i = 1; i < order.length; i++) {
                 const checkIndex = (currentIndex + i) % order.length;
-                if(gameState.players[order[checkIndex]].status === 'playing'){
+                if(gameState.players[order[checkIndex]]?.status === 'playing'){
                     nextPlayerKey = order[checkIndex];
                     break;
                 }
             }
             update(gameRef, { currentPlayerKey: nextPlayerKey });
         }
-        
-        async function dealerTurn() { /* ... */
-             const dealerScore = getScore(gameState.dealer.hand);
-            if (dealerScore < 17 && gameState.deck.length > 0) {
+        async function dealerTurn() {
+             const dealerScore = getScore(gameState.dealer?.hand);
+            if (dealerScore < 17 && gameState.deck?.length > 0) {
                 const newCard = gameState.deck.pop();
                 const newHand = [...gameState.dealer.hand, newCard];
                 await update(gameRef, { 'dealer/hand': newHand, deck: gameState.deck });
@@ -272,8 +249,7 @@
                 determineWinner();
             }
         }
-
-        function determineWinner() { /* ... */
+        function determineWinner() {
             const dealerScore = getScore(gameState.dealer.hand);
             const updates = { status: 'finished', message: `ディーラーのスコア: ${dealerScore}` };
             const playerUpdates = { ...gameState.players };
@@ -292,13 +268,14 @@
             if (!gameState || !localPlayerId) return;
             const players = gameState.players || {};
             const localPlayer = players[localPlayerId];
-
             messageEl.textContent = gameState.message || '';
             
             const revealDealer = gameState.status === 'dealer_turn' || gameState.status === 'finished';
             dealerCardsEl.innerHTML = '';
+            
+            // ★エラー修正: オプショナルチェイニング `?.` を使い、gameState.dealer が存在しない場合にエラーになるのを防ぐ
             (gameState.dealer?.hand || []).forEach((card, index) => dealerCardsEl.appendChild(createCardElement(card, index === 1 && !revealDealer)));
-            dealerScoreEl.textContent = revealDealer ? getScore(gameState.dealer.hand) : getScore([gameState.dealer.hand?.[0]].filter(Boolean));
+            dealerScoreEl.textContent = revealDealer ? getScore(gameState.dealer?.hand) : getScore([gameState.dealer?.hand?.[0]].filter(Boolean));
             
             playersContainer.innerHTML = '';
             (gameState.playerOrder || []).forEach(pid => {
@@ -307,8 +284,6 @@
                 const playerDiv = document.createElement('div');
                 playerDiv.className = 'player-area';
                 if (gameState.currentPlayerKey === p.id && gameState.status === 'playing') playerDiv.classList.add('active');
-                
-                // ★チップ賭け機能: ベッティングUIの描画
                 const betControls = (gameState.status === 'betting' && p.id === localPlayerId && p.status === 'betting') ? `
                     <div class="betting-controls">
                         <button onclick="window.updateBet(10)">+10</button>
@@ -317,7 +292,6 @@
                         <button onclick="window.clearBet()">クリア</button>
                         <button onclick="window.confirmBet()">ベット確定</button>
                     </div>` : '';
-
                 playerDiv.innerHTML = `
                     <h2>${p.name} ${p.id === localPlayerId ? '(あなた)' : ''}</h2>
                     <p>Score: <span>${p.score || 0}</span></p>
@@ -325,44 +299,33 @@
                     <p>Bet: <span>${p.bet || 0}</span></p>
                     <div class="card-container">${(p.hand || []).map(card => createCardElement(card).outerHTML).join('')}</div>
                     <p class="player-status">${p.status || ''}</p>
-                    ${betControls}
-                `;
+                    ${betControls}`;
                 playersContainer.appendChild(playerDiv);
             });
 
             const canDeal = localPlayer?.isHost && (gameState.status === 'waiting' || gameState.status === 'finished');
             nextRoundBtn.style.display = canDeal ? 'inline-block' : 'none';
-            nextRoundBtn.disabled = Object.keys(players).length === 0;
-
+            nextRoundBtn.disabled = !players || Object.keys(players).length === 0;
             const isMyTurn = gameState.currentPlayerKey === localPlayerId && gameState.status === 'playing';
             hitBtn.disabled = !isMyTurn;
             standBtn.disabled = !isMyTurn;
-
-            if (gameState.status === 'waiting') messageEl.textContent = `参加者: ${Object.keys(players).length}人... ID: ${gameState.gameId}`;
+            if (gameState.status === 'waiting' && gameState.gameId) messageEl.textContent = `参加者: ${Object.keys(players).length}人... ID: ${gameState.gameId}`;
         }
 
-        // ★チップ賭け機能: グローバル関数としてベット操作を定義
         window.updateBet = (amount) => {
             const player = gameState.players[localPlayerId];
             const newBet = (player.bet || 0) + amount;
             if (newBet <= player.chips) {
                 update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { bet: newBet });
-            } else {
-                alert('チップが足りません！');
-            }
+            } else { alert('チップが足りません！'); }
         };
-        window.clearBet = () => {
-            update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { bet: 0 });
-        };
+        window.clearBet = () => { update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { bet: 0 }); };
         window.confirmBet = () => {
             const player = gameState.players[localPlayerId];
             if ((player.bet || 0) > 0) {
                 update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { status: 'ready' });
-            } else {
-                alert('ベットしてください。');
-            }
+            } else { alert('ベットしてください。'); }
         };
-
     </script>
 </body>
 </html>
