@@ -42,14 +42,11 @@
     
     <div id="game-container">
         <div id="message-area">参加者を待っています...</div>
-
         <div class="dealer-area">
             <h2>ディーラー: <span id="dealer-score-el"></span></h2>
             <div id="dealer-cards-el" class="card-container"></div>
         </div>
-
         <div id="players-container" class="players-container"></div>
-
         <div class="actions">
             <button id="next-round-btn" style="display: none;">次のラウンドへ</button>
             <button id="hit-btn" disabled>ヒット</button>
@@ -185,29 +182,48 @@
                 message: "ベットしてください"
             });
         });
+
         async function dealCards() {
             const suits = ['♠','♥','♦','♣'], ranks = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
             let newDeck = [];
             for (let i=0; i<4; i++) for (let s of suits) for (let r of ranks) newDeck.push({suit:s, rank:r});
             for (let i = newDeck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [newDeck[i], newDeck[j]] = [newDeck[j], newDeck[i]]; }
+
             const updates = { status: 'playing', deck: newDeck, message: '' };
             const playerUpdates = { ...gameState.players };
-            for(const pid in playerUpdates) { playerUpdates[pid].chips -= playerUpdates[pid].bet; }
+            
+            for(const pid in playerUpdates) {
+                if(playerUpdates[pid].bet > 0) {
+                   playerUpdates[pid].chips -= playerUpdates[pid].bet;
+                }
+            }
+
             updates.dealer = { hand: [] };
             for(let i=0; i<2; i++) {
-                for(const pid of gameState.playerOrder) if(playerUpdates[pid].status === 'ready') playerUpdates[pid].hand.push(updates.deck.pop());
+                for(const pid of gameState.playerOrder) {
+                    if(playerUpdates[pid]?.status === 'ready') {
+                        // ★エラー修正: handプロパティが存在しない場合、空の配列として初期化する
+                        if (!playerUpdates[pid].hand) {
+                            playerUpdates[pid].hand = [];
+                        }
+                        playerUpdates[pid].hand.push(updates.deck.pop());
+                    }
+                }
                 updates.dealer.hand.push(updates.deck.pop());
             }
+
             for(const pid in playerUpdates) {
                 if(playerUpdates[pid].status === 'ready') {
                     playerUpdates[pid].score = getScore(playerUpdates[pid].hand);
                     playerUpdates[pid].status = playerUpdates[pid].score === 21 ? 'blackjack' : 'playing';
                 }
             }
+            
             updates.players = playerUpdates;
-            updates.currentPlayerKey = gameState.playerOrder.find(pid => playerUpdates[pid].status === 'playing');
+            updates.currentPlayerKey = gameState.playerOrder.find(pid => playerUpdates[pid]?.status === 'playing');
             await update(gameRef, updates);
         }
+
         hitBtn.addEventListener('click', async () => {
             const newCard = gameState.deck.pop();
             const newHand = [...gameState.players[localPlayerId].hand, newCard];
@@ -229,7 +245,7 @@
             const order = gameState.playerOrder;
             const currentIndex = order.indexOf(gameState.currentPlayerKey);
             let nextPlayerKey = null;
-            for (let i = 1; i < order.length; i++) {
+            for (let i = 1; i <= order.length; i++) {
                 const checkIndex = (currentIndex + i) % order.length;
                 if(gameState.players[order[checkIndex]]?.status === 'playing'){
                     nextPlayerKey = order[checkIndex];
@@ -269,11 +285,8 @@
             const players = gameState.players || {};
             const localPlayer = players[localPlayerId];
             messageEl.textContent = gameState.message || '';
-            
             const revealDealer = gameState.status === 'dealer_turn' || gameState.status === 'finished';
             dealerCardsEl.innerHTML = '';
-            
-            // ★エラー修正: オプショナルチェイニング `?.` を使い、gameState.dealer が存在しない場合にエラーになるのを防ぐ
             (gameState.dealer?.hand || []).forEach((card, index) => dealerCardsEl.appendChild(createCardElement(card, index === 1 && !revealDealer)));
             dealerScoreEl.textContent = revealDealer ? getScore(gameState.dealer?.hand) : getScore([gameState.dealer?.hand?.[0]].filter(Boolean));
             
