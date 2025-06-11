@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ブラックジャック (Firebase同期版)</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0a6332; color: white; text-align: center; padding-top: 20px; }
+        h1, h2 { margin: 5px 0; text-shadow: 2px 2px 4px #000; }
+        .dealer-area, .player-area, #game-setup { background-color: #0c7c3f; border-radius: 10px; padding: 10px; margin: 10px auto; max-width: 800px; border: 2px solid #ffc107; }
+        .players-container { display: flex; justify-content: space-around; max-width: 900px; margin: 20px auto; }
+        .player-area { width: 31%; border-color: transparent; transition: border-color 0.3s, box-shadow 0.3s; }
+        .player-area.active { border-color: #ffeb3b; box-shadow: 0 0 15px #ffeb3b; }
+        .card-container { display: flex; flex-wrap: wrap; justify-content: center; min-height: 120px; }
+        .card { background-color: white; color: black; border: 1px solid #333; border-radius: 8px; width: 60px; height: 90px; margin: 3px; display: flex; flex-direction: column; justify-content: space-between; padding: 5px; font-size: 1.2em; font-weight: bold; box-shadow: 2px 2px 4px rgba(0,0,0,0.4); position: relative; }
+        .card.hidden { background-color: #b71c1c; color: #b71c1c; }
+        .card.red { color: red; }
+        .card .suit:last-child { align-self: flex-end; transform: rotate(180deg); }
+        .actions button { font-size: 1.2em; padding: 12px 25px; margin: 10px; border: none; border-radius: 5px; cursor: pointer; background-color: #ffc107; color: #000; font-weight: bold; transition: background-color 0.3s; }
+        .actions button:disabled { background-color: #6c757d; cursor: not-allowed; }
+        #message-area { font-size: 1.5em; font-weight: bold; height: 40px; margin-top: 10px; color: #ffeb3b; }
+        .player-status { font-weight: bold; color: #ffeb3b; min-height: 24px; }
+        #game-container, #game-setup { max-width: 900px; margin: 20px auto; }
+        #game-container { display: none; }
+        input { font-size: 1em; padding: 8px; margin: 5px; border-radius: 5px; border: 1px solid #ccc; }
+    </style>
+</head>
+<body>
+    <h1>ブラックジャック - オンライン対戦</h1>
+
+    <div id="game-setup">
+        <h2>ゲームに参加</h2>
+        <div><input type="text" id="player-name-input" placeholder="あなたの名前を入力"></div>
+        <div><button id="create-game-btn">新しいゲームを作成</button></div>
+        <hr>
+        <div>
+            <input type="text" id="game-id-input" placeholder="6桁のゲームIDを入力して参加">
+            <button id="join-game-btn">ゲームに参加</button>
+        </div>
+    </div>
+    
+    <div id="game-container">
+        <div id="message-area">参加者を待っています...</div>
+
+        <div class="dealer-area">
+            <h2>ディーラー: <span id="dealer-score-el"></span></h2>
+            <div id="dealer-cards-el" class="card-container"></div>
+        </div>
+
+        <div id="players-container" class="players-container">
+            </div>
+
+        <div class="actions">
+            <button id="deal-btn" style="display: none;">ディール</button>
+            <button id="hit-btn" disabled>ヒット</button>
+            <button id="stand-btn" disabled>スタンド</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+        import { getDatabase, ref, set, onValue, onDisconnect, serverTimestamp, get, update } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyA0D7fOnIvQFU3O29q6bb_6gj5tWN23N0s",
+            authDomain: "memory-game-10e98.firebaseapp.com",
+            databaseURL: "https://memory-game-10e98-default-rtdb.firebaseio.com",
+            projectId: "memory-game-10e98",
+            storageBucket: "memory-game-10e98.firebasestorage.app",
+            messagingSenderId: "435852264433",
+            appId: "1:435852264433:web:0ef957830b634b9eb13a50",
+            measurementId: "G-8GN7P9PFX7"
+        };
+        const app = initializeApp(firebaseConfig);
+        const database = getDatabase(app);
+
+        // --- グローバル変数と定数 ---
+        let localPlayerId = null;
+        let gameRef = null;
+        let gameState = {};
+        const BET_AMOUNT = 10;
+        
+        // --- DOM要素 ---
+        const messageEl = document.getElementById('message-area');
+        const dealerScoreEl = document.getElementById('dealer-score-el');
+        const dealerCardsEl = document.getElementById('dealer-cards-el');
+        const playersContainer = document.getElementById('players-container');
+        const dealBtn = document.getElementById('deal-btn');
+        const hitBtn = document.getElementById('hit-btn');
+        const standBtn = document.getElementById('stand-btn');
+        const gameSetupDiv = document.getElementById('game-setup');
+        const gameContainerDiv = document.getElementById('game-container');
+        const playerNameInput = document.getElementById('player-name-input');
+        const createGameBtn = document.getElementById('create-game-btn');
+        const joinGameBtn = document.getElementById('join-game-btn');
+        const gameIdInput = document.getElementById('game-id-input');
+
+        // --- 汎用関数 ---
+        function getScore(hand) {
+            let score = 0, aceCount = 0;
+            for (let card of hand) { if (card.rank === 'A') { aceCount++; score += 11; } else if (['K', 'Q', 'J'].includes(card.rank)) { score += 10; } else { score += parseInt(card.rank); } }
+            while (score > 21 && aceCount > 0) { score -= 10; aceCount--; }
+            return score;
+        }
+        function createCardElement(card, isHidden = false) {
+            const cardEl = document.createElement('div');
+            cardEl.className = 'card';
+            if (isHidden) { cardEl.classList.add('hidden'); return cardEl; }
+            const isRed = card.suit === '♥' || card.suit === '♦';
+            if (isRed) cardEl.classList.add('red');
+            cardEl.innerHTML = `<span class="suit">${card.suit}</span><span>${card.rank}</span><span class="suit">${card.suit}</span>`;
+            return cardEl;
+        }
+
+        // --- ルーム機能 ---
+        function generateRoomId() { return Math.floor(100000 + Math.random() * 900000).toString(); }
+        
+        createGameBtn.addEventListener('click', async () => {
+            const playerName = playerNameInput.value.trim();
+            if (!playerName) { alert('名前を入力してください。'); return; }
+            localPlayerId = `player_${Date.now()}`;
+            let newGameId;
+            let gameExists = true;
+            while(gameExists) { newGameId = generateRoomId(); const snapshot = await get(ref(database, `games/${newGameId}`)); if (!snapshot.exists()) gameExists = false; }
+            
+            gameRef = ref(database, `games/${newGameId}`);
+            const initialGameState = {
+                gameId: newGameId,
+                status: 'waiting', // waiting, betting, playing, dealer_turn, finished
+                dealer: { hand: [], score: 0 },
+                players: {
+                    [localPlayerId]: { id: localPlayerId, name: playerName, chips: 100, isHost: true }
+                },
+                playerOrder: [localPlayerId],
+                currentPlayerKey: null
+            };
+            await set(gameRef, initialGameState);
+            setupGameListener(newGameId);
+        });
+
+        joinGameBtn.addEventListener('click', async () => {
+            const playerName = playerNameInput.value.trim();
+            const gameId = gameIdInput.value.trim();
+            if (!playerName || !gameId) { alert('名前とゲームIDを入力してください。'); return; }
+
+            const existingGameRef = ref(database, `games/${gameId}`);
+            const snapshot = await get(existingGameRef);
+            if (snapshot.exists()) {
+                const gameData = snapshot.val();
+                if (Object.keys(gameData.players || {}).length >= 3) { alert('このゲームは満員です。'); return; }
+                if (gameData.status !== 'waiting') { alert('このゲームは既に始まっています。'); return; }
+                
+                localPlayerId = `player_${Date.now()}`;
+                const updates = {};
+                updates[`/players/${localPlayerId}`] = { id: localPlayerId, name: playerName, chips: 100 };
+                updates['/playerOrder'] = [...gameData.playerOrder, localPlayerId];
+                await update(existingGameRef, updates);
+                setupGameListener(gameId);
+            } else { alert('指定されたゲームIDが見つかりません。'); }
+        });
+
+        function setupGameListener(gameId) {
+            gameSetupDiv.style.display = 'none';
+            gameContainerDiv.style.display = 'block';
+            gameRef = ref(database, `games/${gameId}`);
+            
+            onDisconnect(ref(database, `games/${gameId}/players/${localPlayerId}`)).remove();
+
+            onValue(gameRef, (snapshot) => {
+                if (!snapshot.exists()) { alert("ホストが退出しました。"); window.location.reload(); return; }
+                const oldStatus = gameState.status;
+                gameState = snapshot.val();
+                renderGame();
+
+                // ★Firebase対応: ホストがゲーム進行を管理
+                const localPlayer = gameState.players[localPlayerId];
+                if (localPlayer?.isHost) {
+                    // 全員のターンが終わったらディーラーのターンへ
+                    if (gameState.status === 'playing' && Object.values(gameState.players).every(p => p.status !== 'playing' && p.status !== 'betting')) {
+                        update(gameRef, { status: 'dealer_turn' });
+                    }
+                    // ディーラーのターンになったら処理開始
+                    if (gameState.status === 'dealer_turn' && oldStatus !== 'dealer_turn') {
+                        setTimeout(dealerTurn, 1000);
+                    }
+                }
+            });
+        }
+
+        // --- ゲーム進行 (ホストとプレイヤーのアクション) ---
+        dealBtn.addEventListener('click', () => {
+            const suits = ['♠', '♥', '♦', '♣'], ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+            let newDeck = [];
+            for (let i=0; i<4; i++) for (let s of suits) for (let r of ranks) newDeck.push({suit:s, rank:r});
+            for (let i = newDeck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [newDeck[i], newDeck[j]] = [newDeck[j], newDeck[i]]; }
+
+            const updates = { status: 'playing', deck: newDeck, dealer: { hand: [], score: 0 }, message: '' };
+            const playerUpdates = {};
+
+            Object.values(gameState.players).forEach(p => {
+                const bet = p.chips >= BET_AMOUNT ? BET_AMOUNT : 0;
+                playerUpdates[p.id] = { ...p, hand: [], score: 0, status: bet > 0 ? 'playing' : 'out', bet: bet, chips: p.chips - bet };
+            });
+
+            // 2周配る
+            for(let i=0; i<2; i++) {
+                for(const pid of gameState.playerOrder) { if(playerUpdates[pid].status === 'playing') playerUpdates[pid].hand.push(updates.deck.pop()); }
+                updates.dealer.hand.push(updates.deck.pop());
+            }
+
+            // 初期スコア計算とBJチェック
+            for(const pid in playerUpdates) {
+                if(playerUpdates[pid].status === 'playing') {
+                    playerUpdates[pid].score = getScore(playerUpdates[pid].hand);
+                    if (playerUpdates[pid].score === 21) playerUpdates[pid].status = 'blackjack';
+                }
+            }
+            
+            updates.players = playerUpdates;
+            updates.currentPlayerKey = gameState.playerOrder[0];
+            update(gameRef, updates);
+        });
+
+        hitBtn.addEventListener('click', async () => {
+            const playerRef = ref(database, `games/${gameState.gameId}/players/${localPlayerId}`);
+            const deckRef = ref(database, `games/${gameState.gameId}/deck`);
+            
+            const newCard = gameState.deck.pop();
+            const newHand = [...gameState.players[localPlayerId].hand, newCard];
+            const newScore = getScore(newHand);
+            
+            const updates = {};
+            updates[`/players/${localPlayerId}/hand`] = newHand;
+            updates[`/players/${localPlayerId}/score`] = newScore;
+            if (newScore > 21) {
+                updates[`/players/${localPlayerId}/status`] = 'bust';
+            }
+            updates['/deck'] = gameState.deck;
+            await update(gameRef, updates);
+
+            if(newScore > 21) {
+                // バーストしたら自動で次の人へ（ホストが処理）
+                const localPlayer = gameState.players[localPlayerId];
+                if (localPlayer?.isHost) {
+                    setTimeout(nextPlayerTurn, 500);
+                }
+            }
+        });
+        
+        standBtn.addEventListener('click', () => {
+            update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { status: 'stand' });
+            // ターン進行はホストが監視して行う
+            const localPlayer = gameState.players[localPlayerId];
+            if (localPlayer?.isHost) {
+                setTimeout(nextPlayerTurn, 500);
+            }
+        });
+        
+        function nextPlayerTurn() {
+            const order = gameState.playerOrder;
+            const currentIndex = order.indexOf(gameState.currentPlayerKey);
+            let nextIndex = (currentIndex + 1) % order.length;
+            
+            // 全員が終わるまで次の人を探す
+            while(gameState.players[order[nextIndex]].status !== 'playing' && nextIndex !== currentIndex) {
+                nextIndex = (nextIndex + 1) % order.length;
+            }
+            
+            // 全員が終わっていなければ次の人へ
+            if(gameState.players[order[nextIndex]].status === 'playing') {
+                update(gameRef, { currentPlayerKey: order[nextIndex] });
+            }
+        }
+
+        async function dealerTurn() {
+            const dealerScore = getScore(gameState.dealer.hand);
+            if (dealerScore < 17 && gameState.deck.length > 0) {
+                const newCard = gameState.deck.pop();
+                const newHand = [...gameState.dealer.hand, newCard];
+                await update(gameRef, { 'dealer/hand': newHand, deck: gameState.deck });
+                setTimeout(dealerTurn, 800);
+            } else {
+                // ディーラーのターン終了、勝敗判定へ
+                determineWinner();
+            }
+        }
+
+        function determineWinner() {
+            const dealerScore = getScore(gameState.dealer.hand);
+            const updates = { status: 'finished', message: `ディーラーのスコア: ${dealerScore}` };
+            const playerUpdates = { ...gameState.players };
+
+            Object.values(playerUpdates).forEach(p => {
+                if (p.status === 'blackjack') { p.chips += p.bet * 2.5; } 
+                else if (p.status === 'stand') {
+                    if (dealerScore > 21 || p.score > dealerScore) { p.chips += p.bet * 2; } 
+                    else if (p.score === dealerScore) { p.chips += p.bet; }
+                }
+            });
+            updates.players = playerUpdates;
+            update(gameRef, updates);
+        }
+
+        // --- 描画 ---
+        function renderGame() {
+            if (!gameState || !localPlayerId) return;
+            const players = gameState.players || {};
+            const localPlayer = players[localPlayerId];
+
+            messageEl.textContent = gameState.message || '';
+            
+            // ディーラー描画
+            dealerCardsEl.innerHTML = '';
+            (gameState.dealer.hand || []).forEach((card, index) => {
+                const reveal = gameState.status === 'dealer_turn' || gameState.status === 'finished';
+                dealerCardsEl.appendChild(createCardElement(card, index === 1 && !reveal));
+            });
+            dealerScoreEl.textContent = (gameState.status === 'dealer_turn' || gameState.status === 'finished') ? getScore(gameState.dealer.hand) : getScore([gameState.dealer.hand?.[0]].filter(Boolean));
+            
+            // プレイヤー描画
+            playersContainer.innerHTML = '';
+            (gameState.playerOrder || []).forEach(pid => {
+                const p = players[pid];
+                if(!p) return;
+                const playerDiv = document.createElement('div');
+                playerDiv.id = `player-${p.id}-area`;
+                playerDiv.className = 'player-area';
+                if (gameState.currentPlayerKey === p.id && gameState.status === 'playing') {
+                    playerDiv.classList.add('active');
+                }
+                playerDiv.innerHTML = `
+                    <h2>${p.name} ${p.id === localPlayerId ? '(あなた)' : ''}</h2>
+                    <p>Score: <span id="player-${p.id}-score-el">${p.score || 0}</span></p>
+                    <p>Chips: <span id="player-${p.id}-chips-el">${p.chips || 0}</span></p>
+                    <div id="player-${p.id}-cards-el" class="card-container"></div>
+                    <p id="player-${p.id}-status-el" class="player-status">${p.status || ''}</p>
+                `;
+                playersContainer.appendChild(playerDiv);
+                const cardsEl = document.getElementById(`player-${p.id}-cards-el`);
+                (p.hand || []).forEach(card => cardsEl.appendChild(createCardElement(card)));
+            });
+
+            // ボタンの状態更新
+            const canDeal = localPlayer?.isHost && (gameState.status === 'waiting' || gameState.status === 'finished');
+            dealBtn.style.display = canDeal ? 'inline-block' : 'none';
+            dealBtn.disabled = Object.keys(players).length === 0;
+
+            const isMyTurn = gameState.currentPlayerKey === localPlayerId && gameState.status === 'playing';
+            hitBtn.disabled = !isMyTurn;
+            standBtn.disabled = !isMyTurn;
+
+            if (gameState.status === 'waiting') messageEl.textContent = `参加者: ${Object.keys(players).length}人... ID: ${gameState.gameId}`;
+        }
+    </script>
+</body>
+</html>
