@@ -75,12 +75,11 @@
     </div>
 
     <script type="module">
-        // ★エラー修正: import文は必ずスクリプトの最上位に配置します。
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, set, onValue, onDisconnect, serverTimestamp, get, update } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-
-        // ★エラー修正: import以外のすべてのコードをこのリスナーで囲みます。
+        // ★バグ修正: 全てのコードをDOMContentLoadedで囲み、実行順序を保証します。
         window.addEventListener('DOMContentLoaded', () => {
+            import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+            import { getDatabase, ref, set, onValue, onDisconnect, serverTimestamp, get, update } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+
             const firebaseConfig = {
                 apiKey: "AIzaSyA0D7fOnIvQFU3O29q6bb_6gj5tWN23N0s",
                 authDomain: "memory-game-10e98.firebaseapp.com",
@@ -155,7 +154,44 @@
             function endGameAndShowRankings() { const rankedPlayers = Object.values(gameState.players).sort((a, b) => b.chips - a.chips); update(gameRef, { status: 'game_over', ranking: rankedPlayers, message: '最終結果' }); }
             async function dealCards() { const suits = ['♠','♥','♦','♣'], ranks = ['A','2','3','4','5','6','7','8','9','10','J','Q','K']; let newDeck = []; for (let i=0; i<6; i++) for (let s of suits) for (let r of ranks) newDeck.push({suit:s, rank:r}); for (let i = newDeck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [newDeck[i], newDeck[j]] = [newDeck[j], newDeck[i]]; } const updates = { status: 'playing', deck: newDeck, message: 'アクションを選択してください' }; const playerUpdates = { ...gameState.players }; for(const pid in playerUpdates) { if(playerUpdates[pid].bet > 0) { playerUpdates[pid].chips -= playerUpdates[pid].bet; } } updates.dealer = { hand: [] }; for(let i=0; i<2; i++) { for(const pid of gameState.playerOrder) { const p = playerUpdates[pid]; if(p?.status === 'ready') { if (!p.hand) p.hand = []; p.hand.push(updates.deck.pop()); } } updates.dealer.hand.push(updates.deck.pop()); } for(const pid in playerUpdates) { const p = playerUpdates[pid]; if(p.status === 'ready') { p.score = getScore(p.hand); p.status = p.score === 21 ? 'blackjack' : 'playing'; } } updates.players = playerUpdates; await update(gameRef, updates); }
             async function dealerTurn() { const dealerScore = getScore(gameState.dealer?.hand); if (dealerScore < 17 && gameState.deck?.length > 0) { const newCard = gameState.deck.pop(); const newHand = [...gameState.dealer.hand, newCard]; await update(gameRef, { 'dealer/hand': newHand, deck: gameState.deck }); setTimeout(dealerTurn, 800); } else { determineWinner(); } }
-            function determineWinner() { const dealerScore = getScore(gameState.dealer.hand); const updates = { status: 'finished', message: `ディーラーのスコア: ${dealerScore}` }; const playerUpdates = { ...gameState.players }; Object.values(playerUpdates).forEach(p => { if (p.status === 'surrendered') { p.chips += p.bet / 2; } else if (p.status === 'blackjack') { p.chips += (dealerScore === 21 && gameState.dealer.hand.length === 2) ? p.bet : p.bet * 2.5; } else if (p.status === 'stand') { if (dealerScore > 21 || p.score > dealerScore) { p.chips += p.bet * 2; } else if (p.score === dealerScore) { p.chips += p.bet; } } else if (p.status === 'bust') { if (dealerScore > 21) { p.chips += p.bet; } } }); updates.players = playerUpdates; update(gameRef, updates); }
+
+            // ★バグ修正: 勝敗判定ロジックをより明確に修正
+            function determineWinner() {
+                const dealerScore = getScore(gameState.dealer.hand);
+                const updates = { status: 'finished', message: `ディーラーのスコア: ${dealerScore}` };
+                const playerUpdates = { ...gameState.players };
+
+                Object.values(playerUpdates).forEach(p => {
+                    if (p.bet > 0) { // ベットしているプレイヤーのみ精算
+                        switch (p.status) {
+                            case 'surrendered':
+                                p.chips += p.bet / 2; // サレンダー：賭け金の半分を返却
+                                break;
+                            case 'blackjack':
+                                // ディーラーもBJならプッシュ、そうでなければ2.5倍
+                                p.chips += (dealerScore === 21 && gameState.dealer.hand.length === 2) ? p.bet : (p.bet * 2.5);
+                                break;
+                            case 'stand':
+                                if (dealerScore > 21 || p.score > dealerScore) {
+                                    p.chips += p.bet * 2; // 勝ち
+                                } else if (p.score === dealerScore) {
+                                    p.chips += p.bet; // プッシュ
+                                }
+                                // 負けの場合はチップの変動なし（既に引かれているため）
+                                break;
+                            case 'bust':
+                                // プレイヤーがバースト、ディーラーもバーストした場合のみプッシュ
+                                if (dealerScore > 21) {
+                                    p.chips += p.bet;
+                                }
+                                // ディーラーがバーストしなければ負け
+                                break;
+                        }
+                    }
+                });
+                updates.players = playerUpdates;
+                update(gameRef, updates);
+            }
             
             function renderGame() {
                 if (!gameState || !localPlayerId) return;
@@ -179,7 +215,21 @@
                 }
                 const players = gameState.players || {};
                 const localPlayer = players[localPlayerId];
-                if (gameState.status === 'game_over') { gameBodyDiv.style.display = 'none'; let resultHTML = `<h2>最終結果</h2><ol>`; (gameState.ranking || []).forEach((p, index) => { resultHTML += `<li>${index + 1}位: ${p.name} (${p.chips}チップ)</li>`; }); resultHTML += `</ol><button onclick="location.reload()">新しいゲームを始める</button>`; gameResultDiv.innerHTML = resultHTML; messageEl.textContent = 'ゲーム終了！お疲れ様でした！'; roundCounterEl.textContent = '10'; nextRoundBtn.style.display = 'none'; hitBtn.disabled = true; standBtn.disabled = true; doubleBtn.disabled = true; surrenderBtn.disabled = true; return; }
+                if (gameState.status === 'game_over') {
+                    gameBodyDiv.style.display = 'none';
+                    let resultHTML = `<h2>最終結果</h2><ol>`;
+                    (gameState.ranking || []).forEach((p, index) => { resultHTML += `<li>${index + 1}位: ${p.name} (${p.chips}チップ)</li>`; });
+                    resultHTML += `</ol><button onclick="location.reload()">新しいゲームを始める</button>`;
+                    gameResultDiv.innerHTML = resultHTML;
+                    messageEl.textContent = 'ゲーム終了！お疲れ様でした！';
+                    roundCounterEl.textContent = '10';
+                    nextRoundBtn.style.display = 'none';
+                    hitBtn.disabled = true;
+                    standBtn.disabled = true;
+                    doubleBtn.disabled = true;
+                    surrenderBtn.disabled = true;
+                    return;
+                }
                 gameBodyDiv.style.display = 'block'; gameResultDiv.innerHTML = '';
                 messageEl.textContent = gameState.message || '';
                 roundCounterEl.textContent = gameState.currentRound || 0;
