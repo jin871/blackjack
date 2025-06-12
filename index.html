@@ -50,6 +50,10 @@
             <p id="message-area">参加者を待っています...</p>
             <p>ラウンド: <span id="round-counter-el">0</span> / 10</p>
         </div>
+        <div id="timer-container">
+            <div class="timer-pie"></div>
+            <div id="timer-text">20</div>
+        </div>
         <div id="game-body">
             <div class="dealer-area">
                 <h2>ディーラー: <span id="dealer-score-el"></span></h2>
@@ -59,10 +63,6 @@
         </div>
         <div id="game-result"></div>
         <div class="actions">
-            <div id="timer-container">
-                <div class="timer-pie"></div>
-                <div id="timer-text">20</div>
-            </div>
             <div id="action-buttons">
                 <button id="next-round-btn" style="display: none;">次のラウンドへ</button>
                 <button id="hit-btn" disabled>ヒット</button>
@@ -114,6 +114,8 @@
         const gameResultDiv = document.getElementById('game-result');
         const createGameBtn = document.getElementById('create-game-btn');
         const joinGameBtn = document.getElementById('join-game-btn');
+        const playerNameInput = document.getElementById('player-name-input');
+        const gameIdInput = document.getElementById('game-id-input');
 
         // --- 汎用関数 ---
         function getScore(hand) { let score = 0, aceCount = 0; if(!hand) return 0; for (let card of hand) { if (card.rank === 'A') { aceCount++; score += 11; } else if (['K', 'Q', 'J'].includes(card.rank)) { score += 10; } else { score += parseInt(card.rank); } } while (score > 21 && aceCount > 0) { score -= 10; aceCount--; } return score; }
@@ -236,7 +238,6 @@
 
         function renderGame() {
             if (!gameState || !localPlayerId) return;
-
             if(bettingTimerInterval) clearInterval(bettingTimerInterval);
             if(gameState.status === 'betting' && gameState.bettingEndsAt) {
                 timerContainer.style.display = 'block';
@@ -258,7 +259,6 @@
 
             const players = gameState.players || {};
             const localPlayer = players[localPlayerId];
-
             if (gameState.status === 'game_over') {
                 gameBodyDiv.style.display = 'none';
                 let resultHTML = `<h2>最終結果</h2><ol>`;
@@ -315,13 +315,13 @@
         window.confirmBet = () => { const player = gameState.players[localPlayerId]; if ((player.bet || 0) > 0) { update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { status: 'ready' }); } else { alert('ベットしてください。'); } };
 
         // --- Event Listeners ---
-        createGameBtn.addEventListener('click', async () => { /* ... */ });
-        joinGameBtn.addEventListener('click', async () => { /* ... */ });
-        nextRoundBtn.addEventListener('click', () => { /* ... */ });
-        hitBtn.addEventListener('click', async () => { /* ... */ });
-        standBtn.addEventListener('click', () => { /* ... */ });
-        doubleBtn.addEventListener('click', async () => { /* ... */ });
-        surrenderBtn.addEventListener('click', () => { /* ... */ });
+        createGameBtn.addEventListener('click', async () => { const playerName = playerNameInput.value.trim(); if (!playerName) { alert('名前を入力してください。'); return; } localPlayerId = `player_${Date.now()}`; let newGameId; let gameExists = true; while(gameExists) { newGameId = generateRoomId(); const snapshot = await get(ref(database, `games/${newGameId}`)); if (!snapshot.exists()) gameExists = false; } gameRef = ref(database, `games/${newGameId}`); const initialGameState = { gameId: newGameId, status: 'waiting', currentRound: 0, dealer: { hand: [] }, players: { [localPlayerId]: { id: localPlayerId, name: playerName, chips: 100, isHost: true } }, playerOrder: [localPlayerId] }; await set(gameRef, initialGameState); setupGameListener(newGameId); });
+        joinGameBtn.addEventListener('click', async () => { const playerName = playerNameInput.value.trim(); const gameId = gameIdInput.value.trim(); if (!playerName || !gameId) { alert('名前とゲームIDを入力してください。'); return; } const existingGameRef = ref(database, `games/${gameId}`); const snapshot = await get(existingGameRef); if (snapshot.exists()) { const gameData = snapshot.val(); if (gameData.status !== 'waiting') { alert('このゲームは既に始まっています。'); return; } localPlayerId = `player_${Date.now()}`; const updates = {}; updates[`/players/${localPlayerId}`] = { id: localPlayerId, name: playerName, chips: 100 }; updates['/playerOrder'] = [...(gameData.playerOrder || []), localPlayerId]; await update(existingGameRef, updates); setupGameListener(gameId); } else { alert('指定されたゲームIDが見つかりません。'); } });
+        nextRoundBtn.addEventListener('click', () => { if (gameState.currentRound >= 10) { endGameAndShowRankings(); return; } const playerUpdates = {}; Object.values(gameState.players).forEach(p => { playerUpdates[p.id] = { ...p, hand: [], score: 0, bet: 0, status: p.chips > 0 ? 'betting' : 'out' }; }); update(gameRef, { status: 'betting', currentRound: gameState.currentRound + 1, dealer: { hand: [] }, players: playerUpdates, message: "ベットしてください", bettingEndsAt: Date.now() + BETTING_TIME }); });
+        hitBtn.addEventListener('click', async () => { const newCard = gameState.deck.pop(); const newHand = [...gameState.players[localPlayerId].hand, newCard]; const newScore = getScore(newHand); const updates = {}; updates.hand = newHand; updates.score = newScore; if (newScore > 21) updates.status = 'bust'; await update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), updates); await update(ref(database, `games/${gameState.gameId}`), { deck: gameState.deck }); });
+        standBtn.addEventListener('click', () => { update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { status: 'stand' }); });
+        doubleBtn.addEventListener('click', async () => { const player = gameState.players[localPlayerId]; if (player.chips < player.bet) { alert('チップが足りません！'); return; } const newCard = gameState.deck.pop(); const newHand = [...player.hand, newCard]; const newScore = getScore(newHand); const updates = {}; updates[`/players/${localPlayerId}/chips`] = player.chips - player.bet; updates[`/players/${localPlayerId}/bet`] = player.bet * 2; updates[`/players/${localPlayerId}/hand`] = newHand; updates[`/players/${localPlayerId}/score`] = newScore; updates[`/players/${localPlayerId}/status`] = (newScore > 21) ? 'bust' : 'stand'; updates['/deck'] = gameState.deck; await update(gameRef, updates); });
+        surrenderBtn.addEventListener('click', () => { update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { status: 'surrendered' }); });
     </script>
 </body>
 </html>
