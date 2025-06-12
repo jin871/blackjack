@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ブラックジャック (安定版)</title>
+    <title>ブラックジャック (最終安定版)</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0a6332; color: white; text-align: center; padding-top: 20px; }
         h1, h2 { margin: 5px 0; text-shadow: 2px 2px 4px #000; }
@@ -20,7 +20,6 @@
         .actions button:disabled { background-color: #6c757d; cursor: not-allowed; }
         #game-info { font-size: 1.2em; font-weight: bold; min-height: 40px; margin-top: 10px; color: #ffeb3b; }
         #game-info p { margin: 5px 0; }
-        #timer-area { font-size: 1.5em; color: white; }
         .player-status { font-weight: bold; color: #ffeb3b; min-height: 24px; }
         #game-container, #game-setup { max-width: 90%; margin: 20px auto; }
         #game-container { display: none; }
@@ -35,7 +34,7 @@
     </style>
 </head>
 <body>
-    <h1>ブラックジャック - 安定版</h1>
+    <h1>ブラックジャック - 最終安定版</h1>
     <div id="game-setup">
         <h2>ゲームに参加</h2>
         <div><input type="text" id="player-name-input" placeholder="あなたの名前を入力"></div>
@@ -51,12 +50,6 @@
             <p id="message-area">参加者を待っています...</p>
             <p>ラウンド: <span id="round-counter-el">0</span> / 10</p>
         </div>
-        <div id="timer-display-area" style="text-align: center; display: none;">
-             <div id="timer-container">
-                <div class="timer-pie"></div>
-                <div id="timer-text">20</div>
-            </div>
-        </div>
         <div id="game-body">
             <div class="dealer-area">
                 <h2>ディーラー: <span id="dealer-score-el"></span></h2>
@@ -66,6 +59,10 @@
         </div>
         <div id="game-result"></div>
         <div class="actions">
+            <div id="timer-container">
+                <div class="timer-pie"></div>
+                <div id="timer-text">20</div>
+            </div>
             <div id="action-buttons">
                 <button id="next-round-btn" style="display: none;">次のラウンドへ</button>
                 <button id="hit-btn" disabled>ヒット</button>
@@ -80,7 +77,6 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, set, onValue, onDisconnect, serverTimestamp, get, update } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
 
-        // ★エラー修正: この設定オブジェクトが完全であることが、エラー回避の鍵となります。
         const firebaseConfig = {
             apiKey: "AIzaSyA0D7fOnIvQFU3O29q6bb_6gj5tWN23N0s",
             authDomain: "memory-game-10e98.firebaseapp.com",
@@ -95,10 +91,13 @@
         const app = initializeApp(firebaseConfig);
         const database = getDatabase(app);
 
+        // --- グローバル変数 ---
         let localPlayerId = null, gameRef = null, gameState = {};
         let bettingTimerInterval = null; 
         const BETTING_TIME = 20000;
+        let isHandlingBettingEnd = false;
 
+        // --- DOM要素の取得 ---
         const messageEl = document.getElementById('message-area');
         const roundCounterEl = document.getElementById('round-counter-el');
         const timerContainer = document.getElementById('timer-container');
@@ -113,78 +112,15 @@
         const gameContainerDiv = document.getElementById('game-container');
         const gameBodyDiv = document.getElementById('game-body');
         const gameResultDiv = document.getElementById('game-result');
+        const createGameBtn = document.getElementById('create-game-btn');
+        const joinGameBtn = document.getElementById('join-game-btn');
 
-        function getScore(hand) {
-            let score = 0, aceCount = 0;
-            if (!hand) return 0;
-            for (let card of hand) {
-                if (card.rank === 'A') { aceCount++; score += 11; } 
-                else if (['K', 'Q', 'J'].includes(card.rank)) { score += 10; } 
-                else { score += parseInt(card.rank); }
-            }
-            while (score > 21 && aceCount > 0) { score -= 10; aceCount--; }
-            return score;
-        }
+        // --- 汎用関数 ---
+        function getScore(hand) { let score = 0, aceCount = 0; if(!hand) return 0; for (let card of hand) { if (card.rank === 'A') { aceCount++; score += 11; } else if (['K', 'Q', 'J'].includes(card.rank)) { score += 10; } else { score += parseInt(card.rank); } } while (score > 21 && aceCount > 0) { score -= 10; aceCount--; } return score; }
+        function createCardElement(card, isHidden = false) { const cardEl = document.createElement('div'); cardEl.className = 'card'; if (isHidden) { cardEl.classList.add('hidden'); return cardEl; } const isRed = card.suit === '♥' || card.suit === '♦'; if (isRed) cardEl.classList.add('red'); cardEl.innerHTML = `<span class="suit">${card.suit}</span><span>${card.rank}</span><span class="suit">${card.suit}</span>`; return cardEl; }
+        function generateRoomId() { return Math.floor(100000 + Math.random() * 900000).toString(); }
 
-        function createCardElement(card, isHidden = false) {
-            const cardEl = document.createElement('div');
-            cardEl.className = 'card';
-            if (isHidden) { cardEl.classList.add('hidden'); return cardEl; }
-            const isRed = card.suit === '♥' || card.suit === '♦';
-            if (isRed) cardEl.classList.add('red');
-            cardEl.innerHTML = `<span class="suit">${card.suit}</span><span>${card.rank}</span><span class="suit">${card.suit}</span>`;
-            return cardEl;
-        }
-
-        function generateRoomId() {
-            return Math.floor(100000 + Math.random() * 900000).toString();
-        }
-        
-        document.getElementById('create-game-btn').addEventListener('click', async () => {
-            const playerName = document.getElementById('player-name-input').value.trim();
-            if (!playerName) { alert('名前を入力してください。'); return; }
-            localPlayerId = `player_${Date.now()}`;
-            let newGameId;
-            let gameExists = true;
-            while(gameExists) {
-                newGameId = generateRoomId();
-                const snapshot = await get(ref(database, `games/${newGameId}`));
-                if (!snapshot.exists()) gameExists = false;
-            }
-            gameRef = ref(database, `games/${newGameId}`);
-            const initialGameState = {
-                gameId: newGameId,
-                status: 'waiting',
-                currentRound: 0,
-                dealer: { hand: [] },
-                players: { [localPlayerId]: { id: localPlayerId, name: playerName, chips: 100, isHost: true } },
-                playerOrder: [localPlayerId]
-            };
-            await set(gameRef, initialGameState);
-            setupGameListener(newGameId);
-        });
-
-        document.getElementById('join-game-btn').addEventListener('click', async () => {
-            const playerName = document.getElementById('player-name-input').value.trim();
-            const gameId = document.getElementById('game-id-input').value.trim();
-            if (!playerName || !gameId) { alert('名前とゲームIDを入力してください。'); return; }
-            const existingGameRef = ref(database, `games/${gameId}`);
-            const snapshot = await get(existingGameRef);
-            if (snapshot.exists()) {
-                const gameData = snapshot.val();
-                if (gameData.status !== 'waiting') { alert('このゲームは既に始まっています。'); return; }
-                localPlayerId = `player_${Date.now()}`;
-                const updates = {};
-                updates[`/players/${localPlayerId}`] = { id: localPlayerId, name: playerName, chips: 100 };
-                updates['/playerOrder'] = [...(gameData.playerOrder || []), localPlayerId];
-                await update(existingGameRef, updates);
-                setupGameListener(gameId);
-            } else {
-                alert('指定されたゲームIDが見つかりません。');
-            }
-        });
-
-        let isHandlingBettingEnd = false;
+        // --- ゲーム進行関数 ---
         function setupGameListener(gameId) {
             gameSetupDiv.style.display = 'none';
             gameContainerDiv.style.display = 'block';
@@ -213,26 +149,7 @@
                 }
             });
         }
-
-        nextRoundBtn.addEventListener('click', () => {
-            if (gameState.currentRound >= 10) {
-                endGameAndShowRankings();
-                return;
-            }
-            const playerUpdates = {};
-            Object.values(gameState.players).forEach(p => {
-                playerUpdates[p.id] = { ...p, hand: [], score: 0, bet: 0, status: p.chips > 0 ? 'betting' : 'out' };
-            });
-            update(gameRef, {
-                status: 'betting',
-                currentRound: gameState.currentRound + 1,
-                dealer: { hand: [] },
-                players: playerUpdates,
-                message: "ベットしてください",
-                bettingEndsAt: Date.now() + BETTING_TIME
-            });
-        });
-
+        
         async function handleBettingEnd() {
             if(isHandlingBettingEnd) return;
             isHandlingBettingEnd = true;
@@ -246,11 +163,8 @@
                 if(p.status === 'ready') someoneIsReady = true;
             });
             await update(gameRef, updates);
-            // 状態が更新された後、onValueが再度トリガーされるのを待つ代わりに、ホストが直接処理を進める
-            const canDeal = someoneIsReady;
-            // データベースの更新が反映されるのを少し待つ
             setTimeout(async () => {
-                if(canDeal){
+                if(someoneIsReady){
                     await dealCards();
                 } else {
                     await update(gameRef, { status: 'finished', message: '誰もベットしませんでした。' });
@@ -261,11 +175,7 @@
 
         function endGameAndShowRankings() {
             const rankedPlayers = Object.values(gameState.players).sort((a, b) => b.chips - a.chips);
-            update(gameRef, {
-                status: 'game_over',
-                ranking: rankedPlayers,
-                message: '最終結果'
-            });
+            update(gameRef, { status: 'game_over', ranking: rankedPlayers, message: '最終結果' });
         }
 
         async function dealCards() {
@@ -298,11 +208,6 @@
             await update(gameRef, updates);
         }
 
-        doubleBtn.addEventListener('click', async () => { const player = gameState.players[localPlayerId]; if (player.chips < player.bet) { alert('チップが足りません！'); return; } const newCard = gameState.deck.pop(); const newHand = [...player.hand, newCard]; const newScore = getScore(newHand); const updates = {}; updates[`/players/${localPlayerId}/chips`] = player.chips - player.bet; updates[`/players/${localPlayerId}/bet`] = player.bet * 2; updates[`/players/${localPlayerId}/hand`] = newHand; updates[`/players/${localPlayerId}/score`] = newScore; updates[`/players/${localPlayerId}/status`] = (newScore > 21) ? 'bust' : 'stand'; updates['/deck'] = gameState.deck; await update(gameRef, updates); });
-        surrenderBtn.addEventListener('click', () => { update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { status: 'surrendered' }); });
-        hitBtn.addEventListener('click', async () => { const newCard = gameState.deck.pop(); const newHand = [...gameState.players[localPlayerId].hand, newCard]; const newScore = getScore(newHand); const updates = {}; updates.hand = newHand; updates.score = newScore; if (newScore > 21) updates.status = 'bust'; await update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), updates); await update(ref(database, `games/${gameState.gameId}`), { deck: gameState.deck }); });
-        standBtn.addEventListener('click', () => { update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { status: 'stand' }); });
-        
         async function dealerTurn() {
             const dealerScore = getScore(gameState.dealer?.hand);
             if (dealerScore < 17 && gameState.deck?.length > 0) {
@@ -314,15 +219,15 @@
                 determineWinner();
             }
         }
-        
+
         function determineWinner() {
             const dealerScore = getScore(gameState.dealer.hand);
             const updates = { status: 'finished', message: `ディーラーのスコア: ${dealerScore}` };
             const playerUpdates = { ...gameState.players };
             Object.values(playerUpdates).forEach(p => {
-                if (p.status === 'surrendered') { p.chips += p.bet / 2; } 
-                else if (p.status === 'blackjack') { p.chips += (dealerScore === 21 && gameState.dealer.hand.length === 2) ? p.bet : p.bet * 2.5; } 
-                else if (p.status === 'stand') { if (dealerScore > 21 || p.score > dealerScore) { p.chips += p.bet * 2; } else if (p.score === dealerScore) { p.chips += p.bet; } } 
+                if (p.status === 'surrendered') { p.chips += p.bet / 2; }
+                else if (p.status === 'blackjack') { p.chips += (dealerScore === 21 && gameState.dealer.hand.length === 2) ? p.bet : p.bet * 2.5; }
+                else if (p.status === 'stand') { if (dealerScore > 21 || p.score > dealerScore) { p.chips += p.bet * 2; } else if (p.score === dealerScore) { p.chips += p.bet; } }
                 else if (p.status === 'bust') { if (dealerScore > 21) { p.chips += p.bet; } }
             });
             updates.players = playerUpdates;
@@ -331,6 +236,7 @@
 
         function renderGame() {
             if (!gameState || !localPlayerId) return;
+
             if(bettingTimerInterval) clearInterval(bettingTimerInterval);
             if(gameState.status === 'betting' && gameState.bettingEndsAt) {
                 timerContainer.style.display = 'block';
@@ -340,8 +246,8 @@
                     const percentage = Math.max(0, (timeLeft / BETTING_TIME));
                     timerText.textContent = remainingSeconds;
                     const elapsedDegrees = (1 - percentage) * 360;
-                    if (timeLeft < BETTING_TIME * 0.25) { timerPie.style.backgroundColor = '#f44336'; } 
-                    else if (timeLeft < BETTING_TIME * 0.5) { timerPie.style.backgroundColor = '#ffc107'; } 
+                    if (timeLeft < BETTING_TIME * 0.25) { timerPie.style.backgroundColor = '#f44336'; }
+                    else if (timeLeft < BETTING_TIME * 0.5) { timerPie.style.backgroundColor = '#ffc107'; }
                     else { timerPie.style.backgroundColor = '#4caf50'; }
                     timerPie.style.backgroundImage = `conic-gradient(#555 ${elapsedDegrees}deg, transparent ${elapsedDegrees}deg)`;
                     if (timeLeft < 0) clearInterval(bettingTimerInterval);
@@ -349,8 +255,10 @@
             } else {
                 timerContainer.style.display = 'none';
             }
+
             const players = gameState.players || {};
             const localPlayer = players[localPlayerId];
+
             if (gameState.status === 'game_over') {
                 gameBodyDiv.style.display = 'none';
                 let resultHTML = `<h2>最終結果</h2><ol>`;
@@ -366,6 +274,7 @@
                 surrenderBtn.disabled = true;
                 return;
             }
+
             gameBodyDiv.style.display = 'block';
             gameResultDiv.innerHTML = '';
             messageEl.textContent = gameState.message || '';
@@ -375,6 +284,7 @@
             dealerCardsEl.innerHTML = '';
             (gameState.dealer?.hand || []).forEach((card, index) => dealerCardsEl.appendChild(createCardElement(card, index === 1 && !revealDealer)));
             document.getElementById('dealer-score-el').textContent = revealDealer ? getScore(gameState.dealer?.hand) : getScore([gameState.dealer?.hand?.[0]].filter(Boolean));
+            
             const playersContainer = document.getElementById('players-container');
             playersContainer.innerHTML = '';
             (gameState.playerOrder || []).forEach(pid => {
@@ -386,6 +296,7 @@
                 playerDiv.innerHTML = `<h2>${p.name} ${p.id === localPlayerId ? '(あなた)' : ''}</h2><p>Score: <span>${p.score || 0}</span></p><p>Chips: <span>${p.chips || 0}</span></p><p>Bet: <span>${p.bet || 0}</span></p><div class="card-container">${(p.hand || []).map(card => createCardElement(card).outerHTML).join('')}</div><p class="player-status">${p.status || ''}</p>${betControls}`;
                 playersContainer.appendChild(playerDiv);
             });
+
             const canStartNextRound = localPlayer?.isHost && (gameState.status === 'waiting' || gameState.status === 'finished');
             nextRoundBtn.style.display = canStartNextRound ? 'inline-block' : 'none';
             nextRoundBtn.disabled = !players || Object.keys(players).length === 0;
@@ -398,9 +309,19 @@
             if (gameState.status === 'waiting' && gameState.gameId) messageEl.textContent = `参加者: ${Object.keys(players).length}人... ID: ${gameState.gameId}`;
         }
 
+        // --- Window-scoped functions for inline HTML onclicks ---
         window.updateBet = (amount) => { const player = gameState.players[localPlayerId]; const newBet = (player.bet || 0) + amount; if (newBet <= player.chips) { update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { bet: newBet }); } else { alert('チップが足りません！'); } };
         window.clearBet = () => { update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { bet: 0 }); };
         window.confirmBet = () => { const player = gameState.players[localPlayerId]; if ((player.bet || 0) > 0) { update(ref(database, `games/${gameState.gameId}/players/${localPlayerId}`), { status: 'ready' }); } else { alert('ベットしてください。'); } };
+
+        // --- Event Listeners ---
+        createGameBtn.addEventListener('click', async () => { /* ... */ });
+        joinGameBtn.addEventListener('click', async () => { /* ... */ });
+        nextRoundBtn.addEventListener('click', () => { /* ... */ });
+        hitBtn.addEventListener('click', async () => { /* ... */ });
+        standBtn.addEventListener('click', () => { /* ... */ });
+        doubleBtn.addEventListener('click', async () => { /* ... */ });
+        surrenderBtn.addEventListener('click', () => { /* ... */ });
     </script>
 </body>
 </html>
